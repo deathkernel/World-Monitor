@@ -21,7 +21,7 @@ NASA_DONKI="https://api.nasa.gov/DONKI"
 IPAPI="https://ipapi.co/json/"
 DNS_GOOGLE="https://dns.google/resolve"
 
-app=FastAPI(title="World Monitor API",version="0.4.2")
+app=FastAPI(title="World Monitor API",version="0.5.0")
 app.add_middleware(CORSMiddleware,allow_origins=["http://localhost:5173","http://127.0.0.1:5173"],allow_credentials=True,allow_methods=["*"],allow_headers=["*"])
 
 async def get_json(client:httpx.AsyncClient,url:str,**kwargs:Any)->Any:
@@ -56,7 +56,7 @@ async def weather(city:str=Query(min_length=2,max_length=100))->dict[str,Any]:
         async with httpx.AsyncClient(timeout=12) as client:
             results=(await get_json(client,OPEN_METEO_GEOCODE,params={"name":city,"count":1,"language":"en","format":"json"})).get("results") or []
             if not results:raise HTTPException(status_code=404,detail=f"Location not found: {city}")
-            location=results[0];current=(await get_json(client,OPEN_METEO_WEATHER,params={"latitude":location["latitude"],"longitude":location["longitude"],"current":"temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m","timezone":"auto"})).get("current",{})
+            location=results[0];current=(await get_json(client,OPEN_METEO_WEATHER,params={"latitude":location["latitude"],"longitude":location["longitude"],"current":"temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m,wind_direction_10m,precipitation,cloud_cover,pressure_msl,surface_pressure,uv_index,is_day","daily":"sunrise,sunset,temperature_2m_max,temperature_2m_min,precipitation_sum","forecast_days":1,"timezone":"auto"})).get("current",{})
     except HTTPException:raise
     except httpx.HTTPError as exc:raise HTTPException(status_code=502,detail=f"Open-Meteo request failed: {exc}") from exc
     return {"source":"Open-Meteo","location":{"name":location.get("name"),"country":location.get("country"),"latitude":location.get("latitude"),"longitude":location.get("longitude"),"timezone":location.get("timezone")},"current":current}
@@ -107,8 +107,7 @@ async def space()->dict[str,Any]:
 @app.get("/api/ip")
 async def ip_info(target:str|None=Query(default=None,max_length=100))->dict[str,Any]:
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            data=await get_json(client,f"https://ipapi.co/{target.strip()}/json/") if target else await get_json(client,IPAPI)
+        async with httpx.AsyncClient(timeout=10) as client:data=await get_json(client,f"https://ipapi.co/{target.strip()}/json/") if target else await get_json(client,IPAPI)
     except httpx.HTTPError as exc:raise HTTPException(status_code=502,detail=f"IP lookup failed: {exc}") from exc
     return {"source":"ipapi","ip":data.get("ip"),"version":data.get("version"),"city":data.get("city"),"region":data.get("region"),"country":data.get("country_name"),"latitude":data.get("latitude"),"longitude":data.get("longitude"),"org":data.get("org"),"asn":data.get("asn"),"timezone":data.get("timezone")}
 
@@ -127,7 +126,7 @@ async def location(name:str=Query(min_length=2,max_length=100))->dict[str,Any]:
             if not results:raise HTTPException(status_code=404,detail=f"Location not found: {name}")
             loc=results[0];lat,lon=float(loc["latitude"]),float(loc["longitude"])
             weather_data,quake_data,news_data=await asyncio.gather(
-                safe_json(client,OPEN_METEO_WEATHER,params={"latitude":lat,"longitude":lon,"current":"temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m","timezone":"auto"}),
+                safe_json(client,OPEN_METEO_WEATHER,params={"latitude":lat,"longitude":lon,"current":"temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m,wind_direction_10m,precipitation,cloud_cover,pressure_msl,surface_pressure,uv_index,is_day","daily":"sunrise,sunset,temperature_2m_max,temperature_2m_min,precipitation_sum","forecast_days":1,"timezone":"auto"}),
                 safe_json(client,USGS_QUERY,params={"format":"geojson","latitude":lat,"longitude":lon,"maxradiuskm":500,"starttime":(datetime.now(timezone.utc)-timedelta(days=7)).isoformat(),"endtime":datetime.now(timezone.utc).isoformat(),"minmagnitude":2.5,"orderby":"time","limit":20}),
                 safe_json(client,GDELT,params={"query":f'"{loc.get("name",name)}"',"mode":"artlist","format":"json","maxrecords":8,"sort":"datedesc"}),
             )
@@ -137,7 +136,7 @@ async def location(name:str=Query(min_length=2,max_length=100))->dict[str,Any]:
     quakes=[item for feature in (quake_payload or {}).get("features",[]) if (item:=normalize_feature(feature))] if isinstance(quake_payload,dict) else []
     articles=[{"title":a.get("title"),"url":a.get("url"),"domain":a.get("domain"),"date":a.get("seendate")} for a in (news_payload or {}).get("articles",[])] if isinstance(news_payload,dict) else []
     status={"weather":"ok" if weather_payload is not None else "unavailable","earthquakes":"ok" if quake_payload is not None else "unavailable","news":"ok" if news_payload is not None else "unavailable"}
-    response={"source":"World Monitor","location":{"name":loc.get("name"),"country":loc.get("country"),"country_code":loc.get("country_code"),"admin1":loc.get("admin1"),"latitude":lat,"longitude":lon,"timezone":loc.get("timezone")},"weather":weather_payload.get("current",{}) if isinstance(weather_payload,dict) else {},"earthquakes":quakes,"news":articles,"status":status}
+    response={"source":"World Monitor","location":{"name":loc.get("name"),"country":loc.get("country"),"country_code":loc.get("country_code"),"admin1":loc.get("admin1"),"latitude":lat,"longitude":lon,"timezone":loc.get("timezone"),"population":loc.get("population"),"elevation_m":loc.get("elevation"),"feature_code":loc.get("feature_code")},"weather":weather_payload.get("current",{}) if isinstance(weather_payload,dict) else {},"daily":weather_payload.get("daily",{}) if isinstance(weather_payload,dict) else {},"earthquakes":quakes,"news":articles,"status":status}
     if weather_error:status["weather_error"]=weather_error
     if quake_error:status["earthquakes_error"]=quake_error
     if news_error:status["news_error"]=news_error
