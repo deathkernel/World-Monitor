@@ -4,6 +4,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import asyncio
 import httpx
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,7 +21,7 @@ NASA_DONKI = "https://api.nasa.gov/DONKI"
 IPAPI = "https://ipapi.co/json/"
 DNS_GOOGLE = "https://dns.google/resolve"
 
-app = FastAPI(title="World Monitor API", version="0.4.0")
+app = FastAPI(title="World Monitor API", version="0.4.1")
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 async def get_json(client: httpx.AsyncClient, url: str, **kwargs: Any) -> Any:
@@ -150,7 +151,6 @@ async def dns(host: str = Query(min_length=1, max_length=253), record_type: str 
 
 @app.get("/api/location")
 async def location(name: str = Query(min_length=2, max_length=100)) -> dict[str, Any]:
-    """Resolve a city/country and return a compact location intelligence bundle."""
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             results = (await get_json(client, OPEN_METEO_GEOCODE, params={"name": name, "count": 1, "language": "en", "format": "json"})).get("results") or []
@@ -158,7 +158,7 @@ async def location(name: str = Query(min_length=2, max_length=100)) -> dict[str,
                 raise HTTPException(status_code=404, detail=f"Location not found: {name}")
             loc = results[0]
             lat, lon = float(loc["latitude"]), float(loc["longitude"])
-            weather_data, quake_data, news_data = await __import__("asyncio").gather(
+            weather_data, quake_data, news_data = await asyncio.gather(
                 get_json(client, OPEN_METEO_WEATHER, params={"latitude": lat, "longitude": lon, "current": "temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m", "timezone": "auto"}),
                 get_json(client, USGS_QUERY, params={"format": "geojson", "latitude": lat, "longitude": lon, "maxradiuskm": 500, "starttime": (datetime.now(timezone.utc) - timedelta(days=7)).isoformat(), "endtime": datetime.now(timezone.utc).isoformat(), "minmagnitude": 2.5, "orderby": "time", "limit": 20}),
                 get_json(client, GDELT, params={"query": f'"{loc.get("name", name)}"', "mode": "artlist", "format": "json", "maxrecords": 8, "sort": "datedesc"}),
@@ -173,7 +173,8 @@ async def location(name: str = Query(min_length=2, max_length=100)) -> dict[str,
 
 @app.get("/api/command")
 async def command(q: str = Query(min_length=2, max_length=200)) -> dict[str, Any]:
-    text = q.strip(); lower = text
+    text = q.strip()
+    lower = text.lower()
     patterns = {
         "earthquakes": ("earthquake", "earthquakes", "seismic", "quake"),
         "weather": ("weather", "temperature", "forecast", "climate"),
