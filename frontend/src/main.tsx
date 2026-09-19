@@ -4,9 +4,8 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import './styles.css';
 
-type Event = { id: string; type: string; lat: number; lon: number; mag: number; location: string; timestamp: string | null; source: string; depth?: number | null; alert?: string | null; tsunami?: boolean };
-type Country = { type: string; coordinates: any };
-type Countries = { type: 'FeatureCollection'; features: { type: 'Feature'; properties?: { name?: string }; geometry: Country }[] };
+type Event = { id: string; type: string; lat: number; lon: number; mag: number; location: string; timestamp: string | null; source: string; depth?: number | null; tsunami?: boolean };
+type Countries = { type: 'FeatureCollection'; features: { type: 'Feature'; properties?: { name?: string }; geometry: { type: string; coordinates: any } }[] };
 
 const API = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
 const GEO = 'https://raw.githubusercontent.com/datasets/geo-boundaries-world-110m/main/countries.geojson';
@@ -16,39 +15,107 @@ const channels = [
   ['news', '📰', 'NEWS'], ['space', '🛰️', 'SPACE'], ['network', '🌐', 'IP / DNS']
 ];
 
-function ll(lat: number, lon: number, r = 2.04) {
+function ll(lat: number, lon: number, r = 2.04): [number, number, number] {
   const p = (90 - lat) * Math.PI / 180;
   const t = (lon + 180) * Math.PI / 180;
-  return [-r * Math.sin(p) * Math.cos(t), r * Math.cos(p), r * Math.sin(p) * Math.sin(t)] as [number, number, number];
+  return [-r * Math.sin(p) * Math.cos(t), r * Math.cos(p), r * Math.sin(p) * Math.sin(t)];
 }
 
 function Borders({ data }: { data: Countries | null }) {
   const geometry = useMemo(() => {
     if (!data) return null;
     const points: number[] = [];
-    const add = (ring: number[][]) => { for (let i = 0; i < ring.length - 1; i++) points.push(...ll(ring[i][1], ring[i][0], 2.012), ...ll(ring[i + 1][1], ring[i + 1][0], 2.012)); };
-    for (const feature of data.features) { const shape = feature.geometry; if (shape.type === 'Polygon') shape.coordinates.forEach(add); if (shape.type === 'MultiPolygon') shape.coordinates.forEach((poly: any) => poly.forEach(add)); }
-    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(points), 3)); return g;
+    const add = (ring: number[][]) => {
+      for (let i = 0; i < ring.length - 1; i++) {
+        points.push(...ll(ring[i][1], ring[i][0], 2.012), ...ll(ring[i + 1][1], ring[i + 1][0], 2.012));
+      }
+    };
+    for (const feature of data.features) {
+      const shape = feature.geometry;
+      if (shape.type === 'Polygon') shape.coordinates.forEach(add);
+      if (shape.type === 'MultiPolygon') shape.coordinates.forEach((poly: any) => poly.forEach(add));
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(points), 3));
+    return g;
   }, [data]);
   if (!geometry) return null;
   return <lineSegments geometry={geometry}><lineBasicMaterial color="#4fb9d7" transparent opacity={0.52} depthWrite={false} /></lineSegments>;
 }
 
 function Signal({ e, selected, onSelect }: { e: Event; selected: boolean; onSelect: () => void }) {
-  const ring = useRef<THREE.Mesh>(null); const core = useRef<THREE.Mesh>(null); const [x, y, z] = ll(e.lat, e.lon);
-  useFrame(({ clock }) => { const pulse = (Math.sin(clock.elapsedTime * 3 + e.mag) + 1) / 2; if (ring.current) { ring.current.scale.setScalar(1 + pulse * 2); (ring.current.material as THREE.MeshBasicMaterial).opacity = (1 - pulse) * 0.35; } if (core.current) core.current.scale.setScalar(selected ? 1.4 : 0.9 + pulse * 0.4); });
+  const ring = useRef<THREE.Mesh>(null);
+  const core = useRef<THREE.Mesh>(null);
+  const [x, y, z] = ll(e.lat, e.lon);
+  useFrame(({ clock }) => {
+    const pulse = (Math.sin(clock.elapsedTime * 3 + e.mag) + 1) / 2;
+    if (ring.current) {
+      ring.current.scale.setScalar(1 + pulse * 2);
+      (ring.current.material as THREE.MeshBasicMaterial).opacity = (1 - pulse) * 0.35;
+    }
+    if (core.current) core.current.scale.setScalar(selected ? 1.4 : 0.9 + pulse * 0.4);
+  });
   return <group position={[x, y, z]} onClick={(event) => { event.stopPropagation(); onSelect(); }}><mesh ref={ring}><ringGeometry args={[0.045, 0.052, 24]} /><meshBasicMaterial color={e.mag >= 6 ? '#ff496c' : '#55d6ff'} transparent /></mesh><mesh ref={core}><sphereGeometry args={[0.05, 12, 12]} /><meshBasicMaterial color={selected ? '#fff' : e.mag >= 6 ? '#ff496c' : '#55d6ff'} /></mesh></group>;
 }
 
 function Globe({ events, countries, selected, onSelect, scanning }: { events: Event[]; countries: Countries | null; selected: string | null; onSelect: (e: Event) => void; scanning: boolean }) {
-  const group = useRef<THREE.Group>(null); const drag = useRef({ x: 0, y: 0, rx: 0.12, ry: 0.2, active: false }); const direction = useRef(1); const { gl } = useThree();
-  useEffect(() => { const el = gl.domElement; el.style.cursor = 'grab'; const down = (event: PointerEvent) => { drag.current = { x: event.clientX, y: event.clientY, rx: group.current?.rotation.x ?? 0.12, ry: group.current?.rotation.y ?? 0.2, active: true }; el.setPointerCapture(event.pointerId); el.style.cursor = 'grabbing'; }; const move = (event: PointerEvent) => { if (!drag.current.active || !group.current) return; const dx = event.clientX - drag.current.x; const dy = event.clientY - drag.current.y; if (Math.abs(dx) > 2) direction.current = dx > 0 ? 1 : -1; group.current.rotation.y = drag.current.ry + dx * 0.006; group.current.rotation.x = Math.max(-1.15, Math.min(1.15, drag.current.rx + dy * 0.004)); }; const up = (event: PointerEvent) => { drag.current.active = false; try { el.releasePointerCapture(event.pointerId); } catch {} el.style.cursor = 'grab'; }; el.addEventListener('pointerdown', down); el.addEventListener('pointermove', move); el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up); return () => { el.removeEventListener('pointerdown', down); el.removeEventListener('pointermove', move); el.removeEventListener('pointerup', up); el.removeEventListener('pointercancel', up); }; }, [gl]);
-  useFrame((_, dt) => { if (group.current && !drag.current.active && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) group.current.rotation.y += dt * 0.018 * direction.current; });
+  const group = useRef<THREE.Group>(null);
+  const drag = useRef({ x: 0, y: 0, rx: 0.12, ry: 0.2, active: false });
+  const direction = useRef(1);
+  const { gl } = useThree();
+
+  useEffect(() => {
+    const el = gl.domElement;
+    el.style.cursor = 'grab';
+    const down = (event: PointerEvent) => {
+      drag.current = { x: event.clientX, y: event.clientY, rx: group.current?.rotation.x ?? 0.12, ry: group.current?.rotation.y ?? 0.2, active: true };
+      el.setPointerCapture(event.pointerId);
+      el.style.cursor = 'grabbing';
+    };
+    const move = (event: PointerEvent) => {
+      if (!drag.current.active || !group.current) return;
+      const dx = event.clientX - drag.current.x;
+      const dy = event.clientY - drag.current.y;
+      if (Math.abs(dx) > 2) direction.current = dx > 0 ? 1 : -1;
+      group.current.rotation.y = drag.current.ry + dx * 0.006;
+      group.current.rotation.x = Math.max(-1.15, Math.min(1.15, drag.current.rx + dy * 0.004));
+    };
+    const up = (event: PointerEvent) => {
+      drag.current.active = false;
+      try { el.releasePointerCapture(event.pointerId); } catch {}
+      el.style.cursor = 'grab';
+    };
+    el.addEventListener('pointerdown', down);
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', up);
+    el.addEventListener('pointercancel', up);
+    return () => {
+      el.removeEventListener('pointerdown', down);
+      el.removeEventListener('pointermove', move);
+      el.removeEventListener('pointerup', up);
+      el.removeEventListener('pointercancel', up);
+    };
+  }, [gl]);
+
+  useFrame((_, dt) => {
+    if (group.current && !drag.current.active && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      group.current.rotation.y += dt * 0.018 * direction.current;
+    }
+  });
+
   return <group ref={group}><mesh><sphereGeometry args={[2, 48, 48]} /><meshBasicMaterial color="#09131d" wireframe opacity={0.82} transparent /></mesh><mesh><sphereGeometry args={[1.94, 64, 64]} /><meshBasicMaterial color="#0a6f96" wireframe opacity={0.16} transparent /></mesh><Borders data={countries} />{events.map((event) => <Signal key={event.id} e={event} selected={event.id === selected} onSelect={() => onSelect(event)} />)}{scanning && <mesh rotation={[Math.PI / 2, 0, 0]}><torusGeometry args={[2.025, 0.006, 8, 96]} /><meshBasicMaterial color="#65dcff" transparent opacity={0.18} /></mesh>}</group>;
 }
 
 function App() {
-  const [q, setQ] = useState(''); const [events, setEvents] = useState<Event[]>([]); const [countries, setCountries] = useState<Countries | null>(null); const [channel, setChannel] = useState('earthquakes'); const [selected, setSelected] = useState<Event | null>(null); const [data, setData] = useState<any>(null); const [status, setStatus] = useState('CONNECTING • LIVE CORE'); const [msg, setMsg] = useState('Initializing world intelligence channels...'); const [scan] = useState(true);
+  const [q, setQ] = useState('');
+  const [events, setEvents] = useState<Event[]>([]);
+  const [countries, setCountries] = useState<Countries | null>(null);
+  const [channel, setChannel] = useState('earthquakes');
+  const [selected, setSelected] = useState<Event | null>(null);
+  const [data, setData] = useState<any>(null);
+  const [status, setStatus] = useState('CONNECTING • LIVE CORE');
+  const [msg, setMsg] = useState('Initializing world intelligence channels...');
+  const [scan] = useState(true);
 
   const load = useCallback(async (c: string, target = '') => {
     setChannel(c); setSelected(null); setData(null); setStatus(`FETCHING • ${c.toUpperCase()}${target ? ` / ${target.toUpperCase()}` : ''}`);
@@ -58,24 +125,47 @@ function App() {
       if (c === 'news') url += `?query=${encodeURIComponent(target || 'world')}`;
       if (c === 'currency') url += '?base=USD&symbols=EUR,INR,GBP,JPY';
       if (c === 'network') url += `?host=${encodeURIComponent(target || 'google.com')}`;
-      const response = await fetch(url); if (!response.ok) throw new Error('Request failed');
-      const result = await response.json(); setData(result); setStatus('SYNCHRONIZED • LIVE'); setMsg(result.status === 'unavailable' ? result.message : `${c.toUpperCase()} intelligence synchronized${target ? ` for ${target}.` : '.'}`);
+      const response = await fetch(url);
+      if (!response.ok) throw new Error('Request failed');
+      const result = await response.json();
+      setData(result);
+      setStatus('SYNCHRONIZED • LIVE');
+      setMsg(result.status === 'unavailable' ? result.message : `${c.toUpperCase()} intelligence synchronized${target ? ` for ${target}.` : '.'}`);
       if (c === 'earthquakes') setEvents((result.events || []).map((event: any) => ({ ...event, lat: event.latitude, lon: event.longitude, mag: event.severity })));
-    } catch { setStatus('DEGRADED • RETRYING'); setMsg(`${c.toUpperCase()} data source is unavailable right now.`); }
+    } catch {
+      setStatus('DEGRADED • RETRYING');
+      setMsg(`${c.toUpperCase()} data source is unavailable right now.`);
+    }
   }, []);
 
   const loadLocation = useCallback(async (name: string) => {
     setChannel('location'); setSelected(null); setData(null); setStatus(`FETCHING • LOCATION / ${name.toUpperCase()}`);
-    try { const response = await fetch(`${API}/api/location?name=${encodeURIComponent(name)}`); if (!response.ok) throw new Error('Location not found'); const result = await response.json(); setData(result); setStatus('SYNCHRONIZED • LIVE'); setMsg(`Live intelligence synchronized for ${result.location.name}, ${result.location.country}.`); setEvents((result.earthquakes || []).map((event: any) => ({ ...event, lat: event.latitude, lon: event.longitude, mag: event.severity }))); }
-    catch { setStatus('LOCATION NOT FOUND'); setMsg(`No live location match found for "${name}".`); }
+    try {
+      const response = await fetch(`${API}/api/location?name=${encodeURIComponent(name)}`);
+      if (!response.ok) throw new Error('Location not found');
+      const result = await response.json();
+      setData(result);
+      setStatus('SYNCHRONIZED • LIVE');
+      setMsg(`Live intelligence synchronized for ${result.location.name}, ${result.location.country}.`);
+      setEvents((result.earthquakes || []).map((event: any) => ({ ...event, lat: event.latitude, lon: event.longitude, mag: event.severity })));
+    } catch {
+      setStatus('LOCATION NOT FOUND');
+      setMsg(`No live location match found for "${name}".`);
+    }
   }, []);
 
-  useEffect(() => { fetch(GEO).then((response) => response.json()).then(setCountries).catch(() => {}); load('earthquakes'); }, [load]);
+  useEffect(() => {
+    fetch(GEO).then((response) => response.json()).then(setCountries).catch(() => {});
+    load('earthquakes');
+  }, [load]);
 
   const run = async (text: string) => {
-    if (!text.trim()) return; setQ(text); setStatus('PROCESSING • COMMAND');
+    if (!text.trim()) return;
+    setQ(text);
+    setStatus('PROCESSING • COMMAND');
     try {
-      const response = await fetch(`${API}/api/command?q=${encodeURIComponent(text)}`); const result = await response.json();
+      const response = await fetch(`${API}/api/command?q=${encodeURIComponent(text)}`);
+      const result = await response.json();
       if (result.intent === 'weather') await load('weather', result.city);
       else if (result.intent === 'location') await loadLocation(result.location);
       else if (result.intent === 'news' && result.place) await loadLocation(result.place);
@@ -84,12 +174,22 @@ function App() {
       else if (['flights', 'ships', 'iss', 'currency', 'news', 'space', 'network'].includes(result.intent)) await load(result.intent, result.place || '');
       else setMsg(result.message);
       setStatus('ANALYSIS READY');
-    } catch { setStatus('CORE ERROR'); setMsg('Command could not reach the live core.'); }
+    } catch {
+      setStatus('CORE ERROR');
+      setMsg('Command could not reach the live core.');
+    }
   };
 
   const pointCount = channel === 'earthquakes' || channel === 'location' ? events.length : data?.count ?? data?.aircraft?.length ?? '--';
-  return <main className="app"><div className="scanline" /><header className="top"><div className="brand">WORLD <span>// LIVE</span></div><div className="top-center"><i /> J.A.R.V.I.S. CORE <b>CONNECTED</b></div><div className="time">GLOBAL NODE • 01</div></header><nav className="channels">{channels.map(([id, icon, label]) => <button className={channel === id ? 'active' : ''} onClick={() => load(id)} key={id}><span>{icon}</span>{label}</button>)}</nav>
-    <section className="scene"><div className="reticle" /><div className="hud hud-left"><small>{channel.toUpperCase()} INTELLIGENCE</small><strong>{pointCount}</strong><span>LIVE DATA POINTS</span></div><div className="globe-wrap"><Canvas camera={{ position: [0, 0, 6.4], fov: 40 }} dpr={[1, 1.6]}><Globe events={events} countries={countries} selected={selected?.id || null} onSelect={setSelected} scanning={scan} /></Canvas></div>
+
+  return <main className="app">
+    <div className="scanline" />
+    <header className="top"><div className="brand">WORLD <span>// LIVE</span></div><div className="top-center"><i /> J.A.R.V.I.S. CORE <b>CONNECTED</b></div><div className="time">GLOBAL NODE • 01</div></header>
+    <nav className="channels">{channels.map(([id, icon, label]) => <button className={channel === id ? 'active' : ''} onClick={() => load(id)} key={id}><span>{icon}</span>{label}</button>)}</nav>
+    <section className="scene">
+      <div className="reticle" />
+      <div className="hud hud-left"><small>{channel.toUpperCase()} INTELLIGENCE</small><strong>{pointCount}</strong><span>LIVE DATA POINTS</span></div>
+      <div className="globe-wrap"><Canvas camera={{ position: [0, 0, 6.4], fov: 40 }} dpr={[1, 1.6]}><Globe events={events} countries={countries} selected={selected?.id || null} onSelect={setSelected} scanning={scan} /></Canvas></div>
       {selected && channel === 'earthquakes' ? <aside className="event-panel"><button className="close-panel" onClick={() => setSelected(null)}>×</button><small>SELECTED SIGNAL</small><h2>{selected.location}</h2><div className="big">M{selected.mag.toFixed(1)}</div><div className="grid"><span>LAT<b>{selected.lat.toFixed(2)}°</b></span><span>LON<b>{selected.lon.toFixed(2)}°</b></span><span>DEPTH<b>{selected.depth != null ? `${selected.depth.toFixed(1)} km` : '—'}</b></span><span>TSUNAMI<b>{selected.tsunami ? 'YES' : 'NO'}</b></span></div><p>{selected.timestamp ? new Date(selected.timestamp).toLocaleString() : 'Timestamp unavailable'} · {selected.source}</p></aside> : null}
       <aside className="data-panel">
         {channel === 'location' && data?.location ? <div><small>📍 LOCATION INTELLIGENCE / {data.location.name}</small><h2>{data.location.name}, {data.location.country}</h2><p>{data.location.admin1 || 'Regional data'} · {data.location.timezone}</p><div className="hero">{Math.round(data.weather?.temperature_2m ?? 0)}°</div><div className="grid"><span>FEELS LIKE<b>{data.weather?.apparent_temperature ?? '—'}°</b></span><span>HUMIDITY<b>{data.weather?.relative_humidity_2m ?? '—'}%</b></span><span>WIND<b>{data.weather?.wind_speed_10m ?? '—'} km/h</b></span><span>QUAKES<b>{data.earthquakes?.length ?? 0}</b></span></div><small>LOCAL HEADLINES</small><div className="news-list">{(data.news || []).slice(0, 5).map((article: any, index: number) => <div key={index}><b>{article.title}</b><span>{article.domain} · {article.date || 'LIVE'}</span></div>)}</div></div> : null}
@@ -104,7 +204,9 @@ function App() {
         {channel === 'earthquakes' && !selected ? <div><small>🌋 SEISMIC NETWORK</small><div className="hero">{events.length}</div><div className="grid"><span>WINDOW<b>24 HOURS</b></span><span>SOURCE<b>USGS</b></span></div></div> : null}
       </aside>
     </section>
-    <section className="assistant"><div className="assistant-line"><span>◉</span><div><small>{status}</small><p>{msg}</p></div></div><form onSubmit={(event) => { event.preventDefault(); run(q); }}><input value={q} onChange={(event) => setQ(event.target.value)} placeholder="Ask J.A.R.V.I.S. about Pune, India, Tokyo..." /><button>EXECUTE</button></form></section><footer><span>J.A.R.V.I.S. / WORLD INTELLIGENCE</span><span>WEATHER • FLIGHTS • SHIPS • SEISMIC • ISS • FX • NEWS • SPACE • NETWORK</span><span>DRAG TO ROTATE • LIVE</span></footer></main>;
+    <section className="assistant"><div className="assistant-line"><span>◉</span><div><small>{status}</small><p>{msg}</p></div></div><form onSubmit={(event) => { event.preventDefault(); run(q); }}><input value={q} onChange={(event) => setQ(event.target.value)} placeholder="Ask J.A.R.V.I.S. about the world..." /><button>EXECUTE</button></form></section>
+    <footer><span>J.A.R.V.I.S. / WORLD INTELLIGENCE</span><span>WEATHER • FLIGHTS • SHIPS • SEISMIC • ISS • FX • NEWS • SPACE • NETWORK</span><span>DRAG TO ROTATE • LIVE</span></footer>
+  </main>;
 }
 
 ReactDOM.createRoot(document.getElementById('root')!).render(<App />);
