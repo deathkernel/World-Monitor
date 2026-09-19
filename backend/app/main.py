@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -12,7 +13,7 @@ USGS_QUERY = "https://earthquake.usgs.gov/fdsnws/event/1/query"
 OPEN_METEO_GEOCODE = "https://geocoding-api.open-meteo.com/v1/search"
 OPEN_METEO_WEATHER = "https://api.open-meteo.com/v1/forecast"
 
-app = FastAPI(title="World Monitor API", version="0.1.0")
+app = FastAPI(title="World Monitor API", version="0.2.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -38,8 +39,7 @@ def normalize_feature(feature: dict[str, Any]) -> dict[str, Any] | None:
         "title": "Earthquake",
         "location": properties.get("place") or "Unknown location",
         "timestamp": datetime.fromtimestamp(properties["time"] / 1000, tz=timezone.utc).isoformat()
-        if properties.get("time")
-        else None,
+        if properties.get("time") else None,
         "source": "USGS",
         "url": properties.get("url"),
         "alert": properties.get("alert"),
@@ -130,9 +130,19 @@ async def weather(city: str = Query(min_length=2, max_length=100)) -> dict[str, 
 async def command(q: str = Query(min_length=2, max_length=200)) -> dict[str, Any]:
     text = q.strip()
     lower = text.lower()
-    if any(word in lower for word in ("earthquake", "seismic", "quake")):
+
+    if any(word in lower for word in ("earthquake", "earthquakes", "seismic", "quake")):
         return {"intent": "earthquakes", "message": "Seismic channel selected.", "endpoint": "/api/earthquakes"}
-    if "weather" in lower:
-        city = text.lower().split("weather", 1)[-1].strip(" inat:") or "Mumbai"
-        return {"intent": "weather", "city": city.title(), "message": f"Weather channel selected for {city.title()}."}
-    return {"intent": "general", "message": "Command recognized. Available channels: seismic and weather."}
+
+    if "weather" in lower or any(word in lower for word in ("temperature", "forecast", "climate")):
+        match = re.search(r"(?:weather|temperature|forecast|climate)\s+(?:in|at|for)?\s*(.+)$", text, re.I)
+        city = (match.group(1).strip(" ?.,") if match else "Mumbai") or "Mumbai"
+        return {"intent": "weather", "city": city, "message": f"Weather channel selected for {city}."}
+
+    if any(word in lower for word in ("japan", "tokyo")):
+        return {"intent": "earthquakes", "region": "Japan", "message": "Japan seismic activity channel selected.", "endpoint": "/api/earthquakes"}
+
+    if any(word in lower for word in ("world", "global", "happening", "status", "overview")):
+        return {"intent": "overview", "message": "Global overview channel ready. Live seismic and weather channels are online."}
+
+    return {"intent": "general", "message": "Command recognized. Available channels: seismic, weather, and global overview."}
