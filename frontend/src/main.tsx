@@ -12,6 +12,10 @@ type WorldEvent = {
   location: string;
   timestamp: string | null;
   source: string;
+  depth?: number | null;
+  alert?: string | null;
+  tsunami?: boolean;
+  url?: string | null;
 };
 
 type Weather = {
@@ -21,7 +25,7 @@ type Weather = {
 
 const API = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
 
-function Globe({events}:{events:WorldEvent[]}) {
+function Globe({events,onSelect}:{events:WorldEvent[];onSelect:(event:WorldEvent)=>void}) {
   const points = useMemo(() => events.map(e => {
     const phi = (90-e.lat)*Math.PI/180;
     const theta = (e.lon+180)*Math.PI/180;
@@ -31,13 +35,17 @@ function Globe({events}:{events:WorldEvent[]}) {
   return <group rotation={[0.12,0.2,0]}>
     <mesh><sphereGeometry args={[2,48,48]}/><meshBasicMaterial color="#09131d" wireframe opacity={0.82} transparent/></mesh>
     <mesh><sphereGeometry args={[1.94,64,64]}/><meshBasicMaterial color="#0a6f96" wireframe opacity={0.16} transparent/></mesh>
-    {points.map((p,i)=><mesh key={events[i].id} position={p}><sphereGeometry args={[0.045+events[i].mag/150,12,12]}/><meshBasicMaterial color={events[i].mag>=6?'#ff496c':'#55d6ff'}/></mesh>)}
+    {points.map((p,i)=><mesh key={events[i].id} position={p} onClick={(e)=>{e.stopPropagation();onSelect(events[i])}}>
+      <sphereGeometry args={[0.045+events[i].mag/150,12,12]}/>
+      <meshBasicMaterial color={events[i].mag>=6?'#ff496c':'#55d6ff'}/>
+    </mesh>)}
   </group>
 }
 
 function App(){
   const [query,setQuery]=useState('');
   const [events,setEvents]=useState<WorldEvent[]>([]);
+  const [selected,setSelected]=useState<WorldEvent|null>(null);
   const [status,setStatus]=useState('CONNECTING • LIVE CORE');
   const [message,setMessage]=useState('Initializing world intelligence channels...');
   const [weather,setWeather]=useState<Weather|null>(null);
@@ -79,12 +87,15 @@ function App(){
 
   const run=async(q:string)=>{
     if(!q.trim()) return;
+    setQuery(q);
     setStatus('PROCESSING • COMMAND');
     try {
       const response = await fetch(`${API}/api/command?q=${encodeURIComponent(q)}`);
+      if (!response.ok) throw new Error('Command unavailable');
       const data = await response.json();
       if (data.intent === 'earthquakes') {
         await loadEarthquakes();
+        setSelected(null);
         setMessage('Seismic channel refreshed. Live events are now mapped on the globe.');
       } else if (data.intent === 'weather') {
         await loadWeather(data.city);
@@ -115,10 +126,24 @@ function App(){
       <div className="hud hud-right">
         <small>EVENT STREAM</small><strong>{events.filter(e=>e.mag>=4).length.toString().padStart(2,'0')}</strong><span>MAG ≥ 4.0 SIGNALS</span>
       </div>
-      <div className="globe-wrap"><Canvas camera={{position:[0,0,6.4],fov:40}}><ambientLight intensity={1}/><Globe events={events}/></Canvas></div>
+      <div className="globe-wrap"><Canvas camera={{position:[0,0,6.4],fov:40}}><ambientLight intensity={1}/><Globe events={events} onSelect={setSelected}/></Canvas></div>
       <div className="orbit-label one">WEATHER <b>{weather ? `${Math.round(weather.current.temperature_2m ?? 0)}°` : 'SYNC'}</b></div>
       <div className="orbit-label two">SEISMIC <b>LIVE</b></div>
       <div className="orbit-label three">AVIATION <b>STANDBY</b></div>
+
+      {selected && <aside className="event-panel">
+        <button className="close-panel" onClick={()=>setSelected(null)}>×</button>
+        <small>SELECTED SIGNAL</small>
+        <h2>{selected.location}</h2>
+        <div className="event-magnitude"><span>MAGNITUDE</span><strong>{selected.mag.toFixed(1)}</strong></div>
+        <div className="event-grid">
+          <span>LATITUDE <b>{selected.lat.toFixed(2)}°</b></span>
+          <span>LONGITUDE <b>{selected.lon.toFixed(2)}°</b></span>
+          <span>DEPTH <b>{selected.depth != null ? `${selected.depth.toFixed(1)} km` : '—'}</b></span>
+          <span>TSUNAMI <b>{selected.tsunami ? 'YES' : 'NO'}</b></span>
+        </div>
+        <p>{selected.timestamp ? new Date(selected.timestamp).toLocaleString() : 'Timestamp unavailable'} · {selected.source}</p>
+      </aside>}
     </section>
 
     <section className="assistant">
