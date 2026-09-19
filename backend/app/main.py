@@ -20,7 +20,7 @@ NASA_DONKI = "https://api.nasa.gov/DONKI"
 IPAPI = "https://ipapi.co/json/"
 DNS_GOOGLE = "https://dns.google/resolve"
 
-app = FastAPI(title="World Monitor API", version="0.3.0")
+app = FastAPI(title="World Monitor API", version="0.4.0")
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 async def get_json(client: httpx.AsyncClient, url: str, **kwargs: Any) -> Any:
@@ -148,9 +148,32 @@ async def dns(host: str = Query(min_length=1, max_length=253), record_type: str 
         raise HTTPException(status_code=502, detail=f"DNS lookup failed: {exc}") from exc
     return {"source": "Google DNS", "host": host, "type": record_type.upper(), "status": data.get("Status"), "answers": [{"name": a.get("name"), "type": a.get("type"), "data": a.get("data"), "ttl": a.get("TTL")} for a in data.get("Answer", [])]}
 
+@app.get("/api/location")
+async def location(name: str = Query(min_length=2, max_length=100)) -> dict[str, Any]:
+    """Resolve a city/country and return a compact location intelligence bundle."""
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            results = (await get_json(client, OPEN_METEO_GEOCODE, params={"name": name, "count": 1, "language": "en", "format": "json"})).get("results") or []
+            if not results:
+                raise HTTPException(status_code=404, detail=f"Location not found: {name}")
+            loc = results[0]
+            lat, lon = float(loc["latitude"]), float(loc["longitude"])
+            weather_data, quake_data, news_data = await __import__("asyncio").gather(
+                get_json(client, OPEN_METEO_WEATHER, params={"latitude": lat, "longitude": lon, "current": "temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m", "timezone": "auto"}),
+                get_json(client, USGS_QUERY, params={"format": "geojson", "latitude": lat, "longitude": lon, "maxradiuskm": 500, "starttime": (datetime.now(timezone.utc) - timedelta(days=7)).isoformat(), "endtime": datetime.now(timezone.utc).isoformat(), "minmagnitude": 2.5, "orderby": "time", "limit": 20}),
+                get_json(client, GDELT, params={"query": f'"{loc.get("name", name)}"', "mode": "artlist", "format": "json", "maxrecords": 8, "sort": "datedesc"}),
+            )
+    except HTTPException:
+        raise
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Location intelligence request failed: {exc}") from exc
+    quakes = [item for feature in quake_data.get("features", []) if (item := normalize_feature(feature))]
+    articles = [{"title": a.get("title"), "url": a.get("url"), "domain": a.get("domain"), "date": a.get("seendate")} for a in news_data.get("articles", [])]
+    return {"source": "World Monitor", "location": {"name": loc.get("name"), "country": loc.get("country"), "country_code": loc.get("country_code"), "admin1": loc.get("admin1"), "latitude": lat, "longitude": lon, "timezone": loc.get("timezone")}, "weather": weather_data.get("current", {}), "earthquakes": quakes, "news": articles}
+
 @app.get("/api/command")
 async def command(q: str = Query(min_length=2, max_length=200)) -> dict[str, Any]:
-    text = q.strip(); lower = text.lower()
+    text = q.strip(); lower = text
     patterns = {
         "earthquakes": ("earthquake", "earthquakes", "seismic", "quake"),
         "weather": ("weather", "temperature", "forecast", "climate"),
@@ -164,9 +187,13 @@ async def command(q: str = Query(min_length=2, max_length=200)) -> dict[str, Any
     }
     for intent, words in patterns.items():
         if any(word in lower for word in words):
-            city = "Mumbai"
             if intent == "weather":
-                match = re.search(r"(?:weather|temperature|forecast|climate)\s+(?:in|at|for)?\s*(.+)$", text, re.I); city = (match.group(1).strip(" ?.,") if match else "Mumbai") or "Mumbai"
+                match = re.search(r"(?:weather|temperature|forecast|climate)\s+(?:in|at|for)?\s*(.+)$", text, re.I)
+                city = (match.group(1).strip(" ?.,") if match else "Mumbai") or "Mumbai"
                 return {"intent": intent, "city": city, "message": f"Weather channel selected for {city}."}
+            if intent in {"news", "earthquakes"}:
+                match = re.search(r"(?:news|headlines|earthquakes?|seismic|quakes?)\s+(?:in|at|near|around|for)?\s*(.+)$", text, re.I)
+                place = (match.group(1).strip(" ?.,") if match else "")
+                return {"intent": intent, "place": place, "message": f"{intent.upper()} channel selected{f' for {place}' if place else ''}."}
             return {"intent": intent, "message": f"{intent.upper()} channel selected."}
-    return {"intent": "overview", "message": "World intelligence core ready. Available channels: weather, flights, ships, earthquakes, ISS, currency, news, space, IP/DNS."}
+    return {"intent": "location", "location": text, "message": f"Resolving live intelligence for {text}."}
